@@ -1,6 +1,6 @@
 # TODOS
 
-* [ ] expand the "Storing values in the inheritance hierarchy" section with
+* [x] expand the "Storing values in the inheritance hierarchy" section with
 examples of complex inheritance hierarchies and virtual inheritance
 * [ ] finish the "The requires clause" section
 * [ ] implement big five along with templated constructors

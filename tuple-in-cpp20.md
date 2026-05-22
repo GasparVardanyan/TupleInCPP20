@@ -5,9 +5,9 @@ date: 2026-04-28T17:26:31+04:00
 
 ## Storing values in the inheritance hierarchy
 
-First let's understand how a single struct can store variable amount of data
-of different types (all compile time defined). When the type is fixed we use
-arrays to avoid using different names for each data field. But now types
+First, let's understand how a single struct can store a variable amount of data
+of different types, all defined at compile time. When the type is fixed, we use
+arrays to avoid using different names for each data field. But now the types
 are arbitrary. The easiest solution is to store data in the inheritance
 hierarchy where at each level we store a distinct member:
 ```cpp
@@ -33,11 +33,245 @@ The output is:
 10
 ```
 
-This is member hiding, not something like overloading. Both value members
-are stored in the S2 class. static_cast helps to access the base class's
-value member.
+This is member hiding, not something like overloading. Both value
+members are separately stored in the S2 class, static_cast helps
+to access the base class's value member. S2 being inherited from S1
+[have](https://en.cppreference.com/cpp/language/derived_class#Syntax)
+an S1 *subobject* inside it which
+[stores](https://en.cppreference.com/index.php?title=cpp/language/object#Subobjects)
+S2's *subobjects*.
 
-Now let's do the same with templates and value initializers:
+Let's see what happens here:
+```cpp
+# include <iostream>
+
+int main ()
+{
+    struct S1 { int x; };
+    struct S2 : S1 {}; // S2 has S1 subobject
+    S2 s2 {}; // S2 { S1 { x } }
+    s2.x = 10;
+    std::cout << s2.x << std::endl;
+}
+```
+Here since S2 has only one x member in its subobject hierarchy, S2::x isn't
+ambiguous, the compiler successfully finds the x subobject.
+
+Let's see what happens when the most derived class has multiple subobjects
+with the same name:
+```cpp
+# include <iostream>
+
+int main () {
+    struct A { int a = 1; };
+    struct X : A {}; // X have A subobject
+    struct Y : A {}; // Y have A subobject
+    struct AA : X, Y {};    // AA has X and Y subobjects each of which has
+                            // a distinct A subobject
+
+    AA aa; // AA { X { A { a } }, Y { A { a } } }
+    // aa.A::a = 0; // error1 : Ambiguous conversion from derived class 'AA' to base class 'A':
+                    //          struct AA -> X -> A
+                    //          struct AA -> Y -> A
+    aa.X::a = 1;
+    aa.Y::a = 2;
+    std::cout << aa.X::a << aa.Y::a << std::endl;
+
+    // aa.a = 3;	// error2 :  Non-static member 'a' found in multiple base-class subobjects of type 'A':
+                    //           struct AA -> X -> A
+                    //           struct AA -> Y -> A
+
+    // aa.X::A::a = 4; // error1
+    // static_cast <A &> (aa).a = 3; // error1
+    // static_cast <X::A &> (aa).a = 3; // error1
+
+    static_cast <X &> (aa).a = 3;
+    static_cast <Y &> (aa).a = 4;
+
+    std::cout << static_cast <X &> (aa).a << static_cast <Y &> (aa).a << std::endl;
+}
+```
+Output:
+```
+12
+34
+```
+
+Here AA have X and Y base-class subobjects, each of which have a distinct
+A subobject. Access to a subobject through aa itself is ambiguous, because
+AA have two **int a** subobjects in its subobject hirarchy and the access
+is ambigious. But since both X and Y have single **int a** subobjects,
+access expressions like **aa.X::a** and **static_cast <Y &> (aa)** are well
+defined and evaluate to the appropriate integer.
+
+If you code with NeoVim, there is an [extension](https://github.com/J-Cowsert/classlayout.nvim)
+which helps visualize class object layouts. In case of the AA class it is:
+```
+Class Layout: AA
+========================================
+         0 | struct AA
+         0 |   struct X (base)
+         0 |     struct A (base)
+         0 |       int a
+         4 |   struct Y (base)
+         4 |     struct A (base)
+         4 |       int a
+           | [sizeof=8, dsize=8, align=4,
+           |  nvsize=8, nvalign=4]
+```
+
+An interesting case is when we have virtual inheritance:
+```cpp
+# include <iostream>
+
+int main () {
+	{
+		struct A { int a = 1; };
+		struct X : virtual A {};
+		struct Y : A {};
+		struct AA : X, Y {};
+
+		AA aa; // { AA, X, virtual A, Y, A }
+		// aa.A::a = 0; // error1
+		aa.X::a = 1;
+		aa.Y::a = 2;
+		aa.a = 3; // error2
+
+		std::cout << aa.X::a << aa.Y::a << std::endl;
+	}
+
+	std::cout << "====================" << std::endl;
+
+	{
+		struct A { int a = 10; };
+		struct X : virtual A {};
+		struct Y : virtual A {};
+		struct AA : X, Y {};
+
+		AA aa; // { AA, X, virtual A, Y }
+		std::cout << aa.A::a << aa.X::a << aa.Y::a << aa.AA::a << aa.a << std::endl;
+		aa.A::a = 0;
+		std::cout << aa.A::a << aa.X::a << aa.Y::a << aa.AA::a << aa.a << std::endl;
+		aa.X::a = 1;
+		std::cout << aa.A::a << aa.X::a << aa.Y::a << aa.AA::a << aa.a << std::endl;
+		aa.Y::a = 2;
+		std::cout << aa.A::a << aa.X::a << aa.Y::a << aa.AA::a << aa.a << std::endl;
+		aa.a = 3;
+		std::cout << aa.A::a << aa.X::a << aa.Y::a << aa.AA::a << aa.a << std::endl;
+	}
+}
+```
+Output:
+```
+12
+====================
+1010101010
+00000
+11111
+22222
+33333
+```
+
+The most-derived object contains only one A subobject if and only if either
+A appears exactly once in the inheritance hierarchy, virtual or non virtual,
+or every inheritance path leading to A is virtual with respect to A.
+
+Furthermore consider the complete inheritance graph of a class AA.  For any
+base type AX, conceptually flatten the graph so that every inheritance path
+to AX becomes a direct occurrence in a list.  Then:
+* every non-virtual occurrence of AX remains a distinct AX subobject;
+* all occurrences of AX reached through virtual inheritance are merged
+  into a single shared AX subobject.
+The resulting set exactly describes how many AX subobjects physically reside
+inside an object of type AA.
+
+In the first case in the example above, we had two **A** subobjects in **AA**:
+one through virtual inheritance and one through regular inheritance, but in the
+second case, since all inheritance paths leading to **A** were virtual with
+respect to **A**, they are merged into a single **A** subobject.
+
+Furthermore directly virtually inherited classes are initialized only in the most
+derived class:
+
+```cpp
+# include <iostream>
+
+struct A {
+	int a;
+
+	A () : a (0) {
+		std::cout << "A initialized with 0" << std::endl;
+	}
+
+	A (int param) : a (param) {
+		std::cout << "A initialized with param=" << param << std::endl;
+	}
+};
+
+struct B1 : A {
+	int b;
+
+	B1 (int param) : A (param), b (param) {}
+};
+
+struct C1 : B1 {
+	int c;
+
+	C1 (int param) : B1 (param), c (param) {}
+};
+
+struct B2 : virtual A {
+	int b;
+
+	B2 (int param) : A (param), b (param) {}
+};
+
+struct C2 : B2 {
+	int c;
+
+	C2 (int param) : B2 (param), c (param) {}
+};
+
+int main () {
+	C1 c1 (42);
+	std::cout << c1.c << " " << c1.b << " " << c1.a << std::endl;
+	C2 c2 (42);
+	std::cout << c2.c << " " << c2.b << " " << c2.a << std::endl;
+    B1 b1 (42);
+	std::cout << b1.b << " " << b1.a << std::endl;
+    B2 b2 (42);
+	std::cout << b2.b << " " << b2.a << std::endl;
+}
+```
+The output is:
+```
+A initialized with param=42
+42 42 42
+A initialized with 0
+42 42 0
+A initialized with param=42
+42 42
+A initialized with param=42
+42 42
+```
+In case of C1-B1, everything is obvious: C1's parametrized constructor takes
+an integer, passes it to B1's parametrized constructor and initializes its
+member integer c. Then B1's parametrized constructor passes the value to
+A's parametrized constructor and initializes its member integer b. Then
+A's parametrized constructor initializes its member integer a.
+
+In case of C2-B2, the only difference is that B2 inherits A virtually.  Since A
+is virtually inherited, it must be initialized in the most derived class:
+C2. C2 doesn't pass the value to A's constructor. Even though C2 calls B2's
+parametrized constructor, which at first glance seems to call A's parametrized
+constructor, it doesn't, so A's default constructor is called.
+
+In case of **b2**, **B2** is the most derived class so the call to A's
+parametrized constructor gets evaluated.
+
+So far we've got the S2 class which allows to store two distinct members of
+different types, and the types and values are fixed in the class. Let's make
+types arbitrary and add value initializers:
 ```cpp
 # include <iostream>
 
