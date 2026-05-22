@@ -1610,7 +1610,7 @@ To support rvalue expressions too, we have to overload our Forward
 implementation:
 ```cpp
 template <typename T>
-T && Forward (T &% t) {
+T && Forward (T && t) {
 	return static_cast <T &&> (t);
 }
 ```
